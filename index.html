@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>증시 고점 신호 기반 리밸런싱</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen p-4 font-sans">
+    <div class="max-w-md mx-auto space-y-5">
+        
+        <!-- 헤더 -->
+        <header class="border-b border-slate-700 pb-3 flex justify-between items-center">
+            <div>
+                <h1 class="text-xl font-bold text-white">스마트 리밸런싱</h1>
+                <p class="text-slate-400 text-xs mt-1">VIX 고점 신호 감지 & 시뮬레이션</p>
+            </div>
+            <button onclick="fetchVIX()" class="bg-indigo-600 text-xs px-2.5 py-1.5 rounded text-white font-semibold hover:bg-indigo-500">
+                🔄 VIX 갱신
+            </button>
+        </header>
+
+        <!-- VIX 지수 및 시장 위험도 대시보드 -->
+        <div class="bg-slate-800 p-4 rounded-xl border border-slate-700 space-y-2">
+            <div class="flex justify-between items-center">
+                <span class="text-xs text-slate-400">실시간 VIX (변동성 지수)</span>
+                <span id="vixVal" class="text-2xl font-bold font-mono text-amber-400">---</span>
+            </div>
+            <div id="riskBadge" class="p-2.5 rounded-lg text-center font-bold text-sm bg-slate-700 text-slate-300">
+                지수 불러오는 중...
+            </div>
+            <p id="riskGuide" class="text-xs text-slate-400 leading-relaxed"></p>
+        </div>
+
+        <!-- 시나리오 추천 비교 -->
+        <div class="bg-slate-800 p-4 rounded-xl border border-slate-700 space-y-3">
+            <h2 class="text-xs font-bold text-slate-300 border-b border-slate-700 pb-2">💡 시장 신호 기반 추천 비율</h2>
+            <div class="grid grid-cols-3 gap-2 text-center text-xs">
+                <div class="bg-slate-900 p-2 rounded border border-slate-700">
+                    <p class="text-slate-400 mb-1">기본 전략</p>
+                    <p class="font-bold text-slate-200">주식 70%</p>
+                    <p class="text-[10px] text-slate-500">안전 30%</p>
+                </div>
+                <div class="bg-indigo-950/60 p-2 rounded border border-indigo-500/50">
+                    <p class="text-indigo-300 font-bold mb-1">🎯 최적 추천</p>
+                    <p id="recStock" class="font-bold text-indigo-400">--%</p>
+                    <p id="recSafe" class="text-[10px] text-indigo-300">--%</p>
+                </div>
+                <div class="bg-slate-900 p-2 rounded border border-slate-700">
+                    <p class="text-slate-400 mb-1">방어 전략</p>
+                    <p class="font-bold text-slate-200">주식 40%</p>
+                    <p class="text-[10px] text-slate-500">안전 60%</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- 포트폴리오 차트 -->
+        <div class="bg-slate-800 p-4 rounded-xl border border-slate-700 h-44 flex justify-center items-center">
+            <canvas id="portfolioChart"></canvas>
+        </div>
+
+        <!-- 설정 & 계산 테이블 -->
+        <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden text-xs">
+            <div class="p-3 border-b border-slate-700 flex justify-between items-center">
+                <span class="font-bold text-slate-300">총 자산 설정</span>
+                <input type="number" id="totalAmount" value="100000000" oninput="calculate()" class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-right font-mono text-indigo-300 w-32">
+            </div>
+            <table class="w-full text-left">
+                <thead class="bg-slate-900 text-slate-400 border-b border-slate-700">
+                    <tr>
+                        <th class="p-3">자산군</th>
+                        <th class="p-3 text-center">현재%</th>
+                        <th class="p-3 text-center">목표%</th>
+                        <th class="p-3 text-right">조정금액</th>
+                    </tr>
+                </thead>
+                <tbody id="assetRows" class="divide-y divide-slate-700"></tbody>
+            </table>
+        </div>
+
+    </div>
+
+    <script>
+        const assets = [
+            { name: '국내주식', current: 35, target: 30, color: '#3B82F6', type: 'stock' },
+            { name: '해외주식', current: 45, target: 40, color: '#10B981', type: 'stock' },
+            { name: '금 (Gold)', current: 10, target: 15, color: '#F59E0B', type: 'safe' },
+            { name: '달러/현금', current: 10, target: 15, color: '#6366F1', type: 'safe' }
+        ];
+
+        let vixValue = 14.5; // 기본값
+        let chart = null;
+
+        async function fetchVIX() {
+            document.getElementById('vixVal').textContent = '...';
+            try {
+                // Yahoo Finance VIX API via CORS Proxy
+                const res = await fetch('https://api.allorigins.win/get?url=' + encodeURIComponent('https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX'));
+                const data = await res.json();
+                const parsed = JSON.parse(data.contents);
+                vixValue = parsed.chart.result[0].meta.regularMarketPrice;
+                document.getElementById('vixVal').textContent = vixValue.toFixed(2);
+            } catch (e) {
+                console.log('API Fetch Error, using fallback');
+                document.getElementById('vixVal').textContent = vixValue.toFixed(2) + ' (추정)';
+            }
+            analyzeVIX();
+        }
+
+        function analyzeVIX() {
+            const badge = document.getElementById('riskBadge');
+            const guide = document.getElementById('riskGuide');
+            let stockTargetRatio = 70; // 기본 주식비중 (국내+해외)
+
+            if (vixValue < 13.5) {
+                badge.className = "p-2.5 rounded-lg text-center font-bold text-sm bg-rose-900/80 text-rose-200 border border-rose-600";
+                badge.textContent = "🔴 증시 고점 과열 경보 (자만 구간)";
+                guide.textContent = "VIX가 cực도로 낮습니다. 시장에 과도한 낙관론이 팽배해 고점 형성 가능성이 높습니다. 주식 비중을 줄이고 현금/금 비중을 확대하세요.";
+                stockTargetRatio = 50; // 주식 비중 축소
+            } else if (vixValue < 20) {
+                badge.className = "p-2.5 rounded-lg text-center font-bold text-sm bg-emerald-900/80 text-emerald-200 border border-emerald-600";
+                badge.textContent = "🟢 정상 상승/안정 구간";
+                guide.textContent = "시장이 안정적인 상태입니다. 설정된 기본 포트폴리오 목표 비중을 유지하세요.";
+                stockTargetRatio = 70;
+            } else if (vixValue < 30) {
+                badge.className = "p-2.5 rounded-lg text-center font-bold text-sm bg-amber-900/80 text-amber-200 border border-amber-600";
+                badge.textContent = "🟡 변동성 확대 (주의 구간)";
+                guide.textContent = "증시 조정이 진행 중입니다. 리밸런싱을 준비하되 추이를 관망하세요.";
+                stockTargetRatio = 65;
+            } else {
+                badge.className = "p-2.5 rounded-lg text-center font-bold text-sm bg-blue-900/80 text-blue-200 border border-blue-600";
+                badge.textContent = "🔵 공포 구간 (저점 매수 기회)";
+                guide.textContent = "시장 공포가 극에 달했습니다. 안전자산(달러/금)을 매도하여 주식을 저가 매수하는 리밸런싱을 권장합니다.";
+                stockTargetRatio = 85; // 주식 비중 확대
+            }
+
+            // 최적 추천 비율 적용
+            document.getElementById('recStock').textContent = `주식 ${stockTargetRatio}%`;
+            document.getElementById('recSafe').textContent = `안전 ${100 - stockTargetRatio}%`;
+
+            // 자산군 목표 비중 자동 조정
+            const stockAssets = assets.filter(a => a.type === 'stock');
+            const safeAssets = assets.filter(a => a.type === 'safe');
+            
+            stockAssets.forEach(a => a.target = stockTargetRatio / stockAssets.length);
+            safeAssets.forEach(a => a.target = (100 - stockTargetRatio) / safeAssets.length);
+
+            renderTable();
+            calculate();
+        }
+
+        function initChart() {
+            const ctx = document.getElementById('portfolioChart').getContext('2d');
+            chart = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: assets.map(a => a.name),
+                    datasets: [{ data: assets.map(a => a.current), backgroundColor: assets.map(a => a.color), borderWidth: 0 }]
+                },
+                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'right', labels: { color: '#94A3B8', font: { size: 9 } } } }, cutout: '65%' }
+            });
+        }
+
+        function renderTable() {
+            const tbody = document.getElementById('assetRows');
+            tbody.innerHTML = '';
+            assets.forEach((asset, idx) => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td class="p-3 font-semibold">${asset.name}</td>
+                    <td class="p-3 text-center"><input type="number" id="c_${idx}" value="${asset.current}" oninput="updateVal()" class="w-10 bg-slate-900 border border-slate-700 rounded text-center"></td>
+                    <td class="p-3 text-center"><input type="number" id="t_${idx}" value="${asset.target.toFixed(0)}" oninput="updateVal()" class="w-10 bg-slate-900 border border-slate-700 rounded text-center text-indigo-300"></td>
+                    <td class="p-3 text-right font-mono" id="amt_${idx}">0</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function updateVal() {
+            assets.forEach((a, i) => {
+                a.current = parseFloat(document.getElementById(`c_${i}`).value) || 0;
+                a.target = parseFloat(document.getElementById(`t_${i}`).value) || 0;
+            });
+            calculate();
+        }
+
+        function calculate() {
+            const total = parseFloat(document.getElementById('totalAmount').value) || 0;
+
+            assets.forEach((a, i) => {
+                const adjRatio = a.target - a.current;
+                const amt = (total * adjRatio) / 100;
+                const amtElem = document.getElementById(`amt_${i}`);
+
+                if (Math.abs(adjRatio) < 0.5) {
+                    amtElem.textContent = "유지";
+                    amtElem.className = "p-3 text-right text-slate-500";
+                } else if (adjRatio > 0) {
+                    amtElem.textContent = `+${Math.round(amt/10000)}만`;
+                    amtElem.className = "p-3 text-right text-emerald-400 font-bold";
+                } else {
+                    amtElem.textContent = `${Math.round(amt/10000)}만`;
+                    amtElem.className = "p-3 text-right text-rose-400 font-bold";
+                }
+            });
+
+            if (chart) {
+                chart.data.datasets[0].data = assets.map(a => a.current);
+                chart.update();
+            }
+        }
+
+        renderTable();
+        initChart();
+        fetchVIX();
+    </script>
+</body>
+</html>
